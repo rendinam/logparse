@@ -182,6 +182,11 @@ def main():
                     help='List of log files to parse, raw or .gz are accepted.'
                     ' glob syntax is also honored.',
                     nargs='+')
+    ap.add_argument('--window',
+                    '-w',
+                    help='Restrict examination of data to the window of dates'
+                    ' provided.\n'
+                    ' Format: YYYY.MM.DD-YYYY.MM.DD')
     ap.add_argument('--ignorehosts',
                     '-i',
                     help='IP addresses of hosts to ignore when parsing logs.'
@@ -238,9 +243,18 @@ def main():
     # Dump data to disk for use during subsequent runs.
     data.to_pickle(datfile)
 
-
     # Normalize all conda-dev channel names to astroconda-dev
     data = data.replace('/conda-dev', '/astroconda-dev', regex=True)
+
+    print(f'num full data rows = {len(data.index)}')
+
+    # Filter out a particular time period for examination
+    window_start = pd.to_datetime('2019-08-22')
+    window_end = pd.to_datetime('2019-08-30')
+    print(f'Filtering based on window {window_start} - {window_end}.')
+    data = data[pd.to_datetime(data['date']) >= window_start]
+    data = data[pd.to_datetime(data['date']) <= window_end]
+    print(f'num windowed data rows = {len(data.index)}')
 
     all_unique_hosts = list(set(data['ipaddress']))
     #for host in all_unique_hosts:
@@ -305,7 +319,7 @@ def main():
 
         ## Unique packages
         unique_pkgs = set(pkgs['path'])
-        print(f'Unique packages {len(unique_pkgs)}')
+        print(f'Unique full package names {len(unique_pkgs)}')
 
         # Totals of unique package files
         #pkg_totals = []
@@ -332,13 +346,15 @@ def main():
         offsite = pkgs[~pkgs['ipaddress'].str.contains(
             '|'.join(int_host_patterns), regex=True)]
         num_offsite_hosts = len(set(offsite['ipaddress']))
-        print(f'num off-site hosts: {num_offsite_hosts}')
+        print(f'num unique off-site hosts: {num_offsite_hosts}')
         onsite = pkgs[pkgs['ipaddress'].str.contains(
             '|'.join(int_host_patterns), regex=True)]
         num_onsite_hosts = len(set(onsite['ipaddress']))
-        print(f'num on-site hosts: {num_onsite_hosts}')
+        print(f'num unique on-site hosts: {num_onsite_hosts}')
 
-        # Totals of unique software names
+        # Fraction of downloads to off-site hosts
+
+        # Totals of unique software titles
         # i.e. name without version, hash, py or build iteration values
         # Extract simple package titles from 'path' column of data frame.
         names = pkgs['path'].str.replace('/.*/.*/', '', regex=True)
@@ -346,20 +362,35 @@ def main():
         names = list(names.str.replace('(?P<simplename>.*)-.*-.*\.tar\.bz2$',
                 repl,
                 regex=True))
-        unique_names = set(names)
-        print(f'Number of unique {chan} titles downloaded: {len(unique_names)}')
+        unique_names = list(set(names))
         name_totals = []
         for name in unique_names:
             total = names.count(name)
             name_totals.append([name, total])
         name_totals.sort(key=lambda x: x[1], reverse=True)
         y = []
-        x = range(0,len(name_totals))
+        x = [x[0] for x in name_totals]
+        #print(f'Number of unique {chan} titles downloaded: {len(unique_names)}')
         for total in name_totals:
             y.append(total[1])
-            print(f'{total[0]}: {total[1]}')
-        plt.plot(x, y)
-        plt.savefig('ding.png')
+            #print(f'{total[0]}: {total[1]}')
+        width = 5.0
+        fig, axes = plt.subplots(figsize=(10,25))
+        plt.grid(which='major', axis='x')
+        plt.title(f'{start_date.strftime("%m-%d-%Y")} - {end_date.strftime("%m-%d-%Y")}')
+        plt.xlabel('Number of downloads')
+        axes.set_ylim(0,len(name_totals))
+        iraf_ids = []
+        for i,name in enumerate(x):
+            if 'iraf' in name:
+                iraf_ids.append(i)
+
+        plt.gca().invert_yaxis()
+        barlist = axes.barh(x,y,1,edgecolor='black')
+        for id in iraf_ids:
+            barlist[id].set_color('grey')
+        plt.tight_layout()
+        plt.savefig(f'{chan}.png')
 
 
 if __name__ == "__main__":

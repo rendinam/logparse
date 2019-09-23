@@ -30,7 +30,7 @@ def md5(fname):
 # Accommodate PUTs as well as second URLs (normally "-")
 patt = '(?P<ipaddress>\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}) .* .* \\[(?P<date>\\d{2}\\/[a-zA-Z]{3}\\/\\d{4}):(?P<time>\\d{2}:\\d{2}:\\d{2}) (\\+|\\-)\\d{4}] ".* (?P<path>.*?) .*" (?P<status>\\d*) (?P<size>\\d*)'
         
-p = re.compile(patt)
+logpattern = re.compile(patt)
 
 class logData():
 
@@ -41,7 +41,7 @@ class logData():
         'time': {},
         'path': {},
         'status': {},
-        'agent': {},
+        'name': {}, # derived
     }
 
     def __init__(self,
@@ -78,8 +78,11 @@ class logData():
                         continue
             except(TypeError):
                 pass
+
+
             try:
-                match = p.match(line)
+                match = logpattern.match(line)
+                print(f'logpattern.match(line): {match}')
             except:
                 line_errors += 1
                 print(f'Line parse error: {line}')
@@ -90,17 +93,24 @@ class logData():
                 dateobj = dpar.parse(date)
                 time = match.group('time')
                 path = match.group('path')
+
+                # Extract simple package titles from 'path' column of data frame.
+                patt0 = re.compile('/.*/.*/')
+                patt1 = re.compile('(?P<simplename>.*)-.*-.*\.tar\.bz2$')
+                tarball = re.sub(patt0, '', path)
+                namematch = patt1.match(tarball)
+                name = namematch.group('simplename')
+
                 status = match.group('status')
-                #agent = match.group('agent')
                 hostname = ''
                 df = df.append({'ipaddress':ipaddress,
                                 'hostname':hostname,
                                 'date':dateobj,
                                 'time':time,
                                 'path':path,
-                                'status':status},
+                                'status':status,
+                                'name':name},
                                 ignore_index=True)
-                                #'agent':agent}, ignore_index=True)
             except(AttributeError):
                 unparseable += 1
         print(f'unparseable lines : {unparseable}')
@@ -157,8 +167,6 @@ def filter_pkgs(df):
     successful (HTTP 200) conda package (.bz2 files) downloads.'''
     print(df)
     inlen = len(df)
-    ##out = df.loc[df['agent'].str.contains('conda')]
-    ##out = out.loc[out['path'].str.contains('bz2')]
     out = df.loc[df['path'].str.contains('bz2')]
     out = out.loc[(out['status'] == '200') | (out['status'] == '302')]
     outlen = len(out)
@@ -168,6 +176,7 @@ def filter_pkgs(df):
 
 
 def main():
+    # TODO: Allow specification of a digested data file with fallback to a default.
     ap = argparse.ArgumentParser(
             prog='logparse.py',
             description='Parse and digest apache/nginx access logs in either'
@@ -199,14 +208,17 @@ def main():
         config = yaml.safe_load(f)
 
     files = []
-    for filespec in args.files:
-        expanded =  glob(filespec)
-        expanded.sort()
-        if isinstance(expanded, list):
-            for name in expanded:
-                files.append(name)
-        else:
-            files.append(expanded)
+    try:
+        for filespec in args.files:
+            expanded =  glob(filespec)
+            expanded.sort()
+            if isinstance(expanded, list):
+                for name in expanded:
+                    files.append(name)
+            else:
+                files.append(expanded)
+    except(TypeError):
+        pass
 
     inf_hosts = config['infrastructure_hosts']
     num_inf_hosts = len(inf_hosts)
@@ -233,24 +245,27 @@ def main():
     if len(newdata.index) != 0:
         newdata = filter_pkgs(newdata)
         newdata = newdata.sort_values(by='date')
-
-    # Append newdata to existing data (potentially empty)
-    data = data.append(newdata, ignore_index=True)
+        # Add newdata to existing data (potentially empty)
+        data = data.append(newdata, ignore_index=True)
+    print('.0')
 
     # Remove any duplicate rows in data:
     data = data.drop_duplicates()
+    print('.2')
+
+    # Normalize all conda-dev channel names to astroconda-dev
+    data = data.replace('/conda-dev', '/astroconda-dev', regex=True)
+    print(data)
+    print('.3')
 
     # Dump data to disk for use during subsequent runs.
     data.to_pickle(datfile)
 
-    # Normalize all conda-dev channel names to astroconda-dev
-    data = data.replace('/conda-dev', '/astroconda-dev', regex=True)
-
     print(f'num full data rows = {len(data.index)}')
 
     # Filter out a particular time period for examination
-    window_start = pd.to_datetime('2019-08-22')
-    window_end = pd.to_datetime('2019-08-30')
+    window_start = pd.to_datetime('2019-09-12')
+    window_end = pd.to_datetime('2019-09-19')
     print(f'Filtering based on window {window_start} - {window_end}.')
     data = data[pd.to_datetime(data['date']) >= window_start]
     data = data[pd.to_datetime(data['date']) <= window_end]
@@ -303,8 +318,6 @@ def main():
         # Downloads per day over time frame
         for date in dates:
             bydate[date] = len(pkgs[pkgs['date'] == date])
-        #for date in bydate:
-        #    print(f'{date} : {bydate[date]}')
 
         chan_downloads = len(pkgs.index)
         print(f'Downloads: {chan_downloads}')
@@ -335,6 +348,8 @@ def main():
         #for i in range(top):
         #    print(pkg_totals[i])
 
+        # What is the fraction of downloads for each OS?
+
         # What fraction of total downloads come from non-infrastructure on-site hosts?
         noninf = pkgs[~pkgs['ipaddress'].isin(config['infrastructure_hosts'])]
         total_noninf = len(noninf.index)
@@ -357,38 +372,63 @@ def main():
         # Totals of unique software titles
         # i.e. name without version, hash, py or build iteration values
         # Extract simple package titles from 'path' column of data frame.
-        names = pkgs['path'].str.replace('/.*/.*/', '', regex=True)
-        repl = lambda m: m.group('simplename')
-        names = list(names.str.replace('(?P<simplename>.*)-.*-.*\.tar\.bz2$',
-                repl,
-                regex=True))
+        #names = pkgs['path'].str.replace('/.*/.*/', '', regex=True)
+        #repl = lambda m: m.group('simplename')
+        #names = list(names.str.replace('(?P<simplename>.*)-.*-.*\.tar\.bz2$',
+        #        repl,
+        #        regex=True))
+        names = list(set(pkgs['name']))
+        print('*')
+        print(names)
+        print('*')
         unique_names = list(set(names))
-        name_totals = []
+        name_statsums = []
         for name in unique_names:
-            total = names.count(name)
-            name_totals.append([name, total])
-        name_totals.sort(key=lambda x: x[1], reverse=True)
+            statsum = {}
+            statsum['name'] = name
+            statsum['total'] = names.count(name)
+            # Not correct. Need to match up unique_names with host associated with
+            #    each full package name to avoid over broad matches of unique names
+            #    with substrings of longer names that contain the unique name.
+            #statsum['onsite'] = len(pkgs[pkgs['ipaddress'].str.contains(
+            #    '|'.join(int_host_patterns), regex=True)])
+            #statsum['offsite'] = len(pkgs[~pkgs['ipaddress'].str.contains(
+            #    '|'.join(int_host_patterns), regex=True)])
+            name_statsums.append(statsum)
+
+            # Sum on-site transactions for each package name
+            #npkgs = pkgs[pkgs['name'
+ 
+
+        name_statsums.sort(key=lambda x: x['total'], reverse=True)
         y = []
-        x = [x[0] for x in name_totals]
-        #print(f'Number of unique {chan} titles downloaded: {len(unique_names)}')
-        for total in name_totals:
-            y.append(total[1])
-            #print(f'{total[0]}: {total[1]}')
+        y = [i['total'] for i in name_statsums]
+        x = [i['name'] for i in name_statsums]
+        print(name_statsums)
+
+        # Calculate fractions of properties of each unique package title
+        #  for stacked bar plot purposes.
+
+
+        print(f'Number of unique {chan} titles downloaded: {len(unique_names)}')
+        # For each unique softare name, sum the number of transactions from internal hosts.
         width = 5.0
         fig, axes = plt.subplots(figsize=(10,25))
         plt.grid(which='major', axis='x')
         plt.title(f'{start_date.strftime("%m-%d-%Y")} - {end_date.strftime("%m-%d-%Y")}')
         plt.xlabel('Number of downloads')
-        axes.set_ylim(0,len(name_totals))
-        iraf_ids = []
-        for i,name in enumerate(x):
-            if 'iraf' in name:
-                iraf_ids.append(i)
+        axes.set_ylim(0,len(name_statsums))
+
+        #iraf_ids = []
+        #for i,name in enumerate(x):
+        #    if 'iraf' in name:
+        #        iraf_ids.append(i)
 
         plt.gca().invert_yaxis()
-        barlist = axes.barh(x,y,1,edgecolor='black')
-        for id in iraf_ids:
-            barlist[id].set_color('grey')
+        width = 1
+        barlist = axes.barh(x, y, width, edgecolor='black')
+        #for id in iraf_ids:
+        #    barlist[id].set_color('grey')
         plt.tight_layout()
         plt.savefig(f'{chan}.png')
 

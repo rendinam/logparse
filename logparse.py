@@ -264,8 +264,8 @@ def main():
     print(f'num full data rows = {len(data.index)}')
 
     # Filter out a particular time period for examination
-    window_start = pd.to_datetime('2019-09-12')
-    window_end = pd.to_datetime('2019-09-19')
+    window_start = pd.to_datetime('2019-09-15')
+    window_end = pd.to_datetime('2019-09-21')
     print(f'Filtering based on window {window_start} - {window_end}.')
     data = data[pd.to_datetime(data['date']) >= window_start]
     data = data[pd.to_datetime(data['date']) <= window_end]
@@ -377,33 +377,38 @@ def main():
         #names = list(names.str.replace('(?P<simplename>.*)-.*-.*\.tar\.bz2$',
         #        repl,
         #        regex=True))
-        names = list(set(pkgs['name']))
-        print('*')
-        print(names)
-        print('*')
+        names = list(pkgs['name'])
         unique_names = list(set(names))
         name_statsums = []
         for name in unique_names:
             statsum = {}
             statsum['name'] = name
             statsum['total'] = names.count(name)
-            # Not correct. Need to match up unique_names with host associated with
-            #    each full package name to avoid over broad matches of unique names
-            #    with substrings of longer names that contain the unique name.
-            #statsum['onsite'] = len(pkgs[pkgs['ipaddress'].str.contains(
-            #    '|'.join(int_host_patterns), regex=True)])
-            #statsum['offsite'] = len(pkgs[~pkgs['ipaddress'].str.contains(
-            #    '|'.join(int_host_patterns), regex=True)])
-            name_statsums.append(statsum)
 
-            # Sum on-site transactions for each package name
-            #npkgs = pkgs[pkgs['name'
- 
+            # Sum on- and off-site transactions for each package name
+            name_txns = pkgs[pkgs['name'] == name]
+
+            on_txns = name_txns[name_txns['ipaddress'].str.contains(
+            '|'.join(int_host_patterns), regex=True)]
+            num_onsite_txns = len(on_txns.index)
+            statsum['onsite'] = num_onsite_txns
+
+            off_txns = name_txns[~name_txns['ipaddress'].str.contains(
+            '|'.join(int_host_patterns), regex=True)]
+            num_offsite_txns = len(off_txns.index)
+            statsum['offsite'] = num_offsite_txns
+
+            name_statsums.append(statsum)
 
         name_statsums.sort(key=lambda x: x['total'], reverse=True)
         y = []
         y = [i['total'] for i in name_statsums]
+        y_onsite = [i['onsite'] for i in name_statsums]
+        print(f'y_onsite: {y_onsite}')
+        y_offsite = [i['offsite'] for i in name_statsums]
+        print(f'y_offisite: {y_offsite}')
         x = [i['name'] for i in name_statsums]
+        print('name_statsums')
         print(name_statsums)
 
         # Calculate fractions of properties of each unique package title
@@ -419,14 +424,10 @@ def main():
         plt.xlabel('Number of downloads')
         axes.set_ylim(0,len(name_statsums))
 
-        #iraf_ids = []
-        #for i,name in enumerate(x):
-        #    if 'iraf' in name:
-        #        iraf_ids.append(i)
-
         plt.gca().invert_yaxis()
         width = 1
-        barlist = axes.barh(x, y, width, edgecolor='black')
+        barlist = axes.barh(x, y_onsite, width, edgecolor='black')
+        barlist = axes.barh(x, y_offsite, width, left=y_onsite, edgecolor='black')
         #for id in iraf_ids:
         #    barlist[id].set_color('grey')
         plt.tight_layout()

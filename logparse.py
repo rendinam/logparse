@@ -16,6 +16,8 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from dateutil import parser as dpar
 from collections import OrderedDict
+import urllib.request
+from urllib.error import HTTPError
 import yaml
 
 
@@ -84,7 +86,6 @@ class LogData():
             hostname = self.hostnames[ipaddress]
 
     def process_lines(self, f):
-        print('process lines')
         df = pd.DataFrame(self.columns)
         unparseable = 0
         for line in f.readlines():
@@ -102,7 +103,7 @@ class LogData():
 
             try:
                 match = logpattern.match(line)
-                print(f'logpattern.match(line): {match}')
+                #print(f'logpattern.match(line): {match}')
             except:
                 line_errors += 1
                 print(f'Line parse error: {line}')
@@ -121,7 +122,7 @@ class LogData():
                 namematch = patt1.match(tarball)
                 name = namematch.group('simplename')
                 status = match.group('status')
-                size = match.group('size')
+                size = int(match.group('size'))
                 hostname = ''
                 df = df.append({'ipaddress':ipaddress,
                                 'hostname':hostname,
@@ -157,14 +158,14 @@ class LogData():
             setname = re.sub('\.gz$', '', log)
             setpath = os.path.join(self.digest_path, setname)
             pklpath = os.path.join(self.digest_path, f'{setname}.pkl')
-            print(f'ingesting dataset = {setname}')
+            print(f'Reading log file {log}...')
             if '.gz' in log:
                 with gzip.open(log, 'r') as f:
                     df = self.process_lines(f)
             else:
                 with open(log, 'r') as f:
                     df = self.process_lines(f)
-            print(f'df shape = {df.shape}')
+            print(f'Added {df.index} transations to dataset. {newdata.shape} for this session.')
             newdata = newdata.append(df, ignore_index=True)
             print(newdata.shape)
             self.hashes.append(hashval)
@@ -341,9 +342,13 @@ def main():
 
         chan_downloads = len(pkgs.index)
         print(f'Downloads: {chan_downloads}')
-        # Downloads per week over time frame
 
         print(f'Average downloads per day: {ceil(chan_downloads / days_elapsed)}')
+
+        # Total bandwidth consumed by this channel's use over time frame.
+        bytecount = pkgs['size'].sum()
+        gib = bytecount / 1e9
+        print(f'Channel bytecount = {bytecount}')
 
         # Number of unique hosts and geographic location
         unique_hosts = set(pkgs['ipaddress'])
@@ -354,21 +359,11 @@ def main():
         unique_pkgs = set(pkgs['path'])
         print(f'Unique full package names {len(unique_pkgs)}')
 
-        # Totals of unique package files
-        #pkg_totals = []
-        #for pkg in unique_pkgs:
-        #    total = len(pkgs[pkgs['path'] == pkg].index)
-        #    pkg_totals.append([pkg, total])
-        #pkg_totals.sort(key=lambda x: x[1], reverse=True)
-        #if len(unique_pkgs) > 5:
-        #    top = 10
-        #else:
-        #    top = len(unique_pkgs)
-        #print(f'Top {top} {chan} package filenames:')
-        #for i in range(top):
-        #    print(pkg_totals[i])
-
         # What is the fraction of downloads for each OS?
+        num_linux_txns = len(pkgs[pkgs['path'].str.contains('linux-64')].index)
+        num_osx_txns = len(pkgs[pkgs['path'].str.contains('osx-64')].index)
+        pcnt_linux_txns = (num_linux_txns / float(chan_downloads))*100
+        pcnt_osx_txns = (num_osx_txns / float(chan_downloads))*100
 
         # What fraction of total downloads come from non-infrastructure on-site hosts?
         noninf = pkgs[~pkgs['ipaddress'].isin(config['infrastructure_hosts'])]
@@ -388,8 +383,6 @@ def main():
         print(f'num unique on-site hosts: {num_onsite_hosts}')
 
         infra = pkgs[pkgs['ipaddress'].str.contains('|'.join(inf_hosts))]
-
-        # Fraction of downloads to off-site hosts
 
         # Totals of unique software titles
         # i.e. name without version, hash, py or build iteration values
@@ -424,6 +417,17 @@ def main():
             num_infra_txns = len(infra_txns.index)
             statsum['infra'] = num_infra_txns
 
+            ## Determine which packages are also available via PyPI
+            url = f'https://pypi.org/pypi/{name}/json'
+            try:
+                rq = urllib.request.urlopen(url)
+                #pl = f.read().decode('utf-8')
+                #piinfo = json.loads(pl)
+                statsum['pypi'] = True
+            except(HTTPError):
+                statsum['pypi'] = False
+            #statsum['pypi'] = False
+
             name_statsums.append(statsum)
 
         name_statsums.sort(key=lambda x: x['total'], reverse=True)
@@ -437,23 +441,47 @@ def main():
         fig, axes = plt.subplots(figsize=(10,25))
         plt.grid(which='major', axis='x')
         plt.title(f'{chan} -- {start_date.strftime("%m-%d-%Y")} - {end_date.strftime("%m-%d-%Y")}')
-        plt.xlabel('Number of downloads')
+        plt.xlabel('Downloads')
         axes.set_ylim(-1,len(name_statsums))
+        axes.tick_params(labeltop=True)
 
         plt.gca().invert_yaxis()
         width = 1
         from operator import add
+        barlists = []
         # Horizontal stacked bar chart with off-site, on-site, and infrastructure transactions.
-        barlist = axes.barh(y, x_offsite, width, edgecolor='white', color='tab:blue')
-        barlist = axes.barh(y, x_onsite, width, left=x_offsite, edgecolor='white', color='tab:green')
+        barlists.append(axes.barh(y, x_offsite, width, edgecolor='white', color='tab:blue'))
+        barlists.append(axes.barh(y, x_onsite, width, left=x_offsite, edgecolor='white', color='tab:green'))
         # Sum bars up to this point to correctly stack the subsequent one(s).
         offset = list(map(add, x_offsite, x_onsite))
-        barlist = axes.barh(y, x_infra, width, left=offset, edgecolor='white', color='tab:olive')
+        barlists.append(axes.barh(y, x_infra, width, left=offset, edgecolor='white', color='tab:olive'))
 
-        axes.legend(['off-site', 'on-site', 'infrastructure'])
+        for i,statsum in enumerate(name_statsums):
+            if statsum['pypi'] == True:
+                axes.get_yticklabels()[i].set_color('orange')
+                axes.get_yticklabels()[i].set_weight('bold')
+
+        # Annotate plot with additional stats
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        plural = ''
+        if days_elapsed > 1:
+            plural = 's'
+        stats_text = (f'{days_elapsed} day{plural}\n'
+                     f'Total Downloads: {chan_downloads}\n'
+                     f'Average downloads per day: {ceil(chan_downloads / days_elapsed)}\n'
+                     f'Unique titles: {len(unique_names)}\n'
+                     f'Data transferred: {gib:.2f} GiB\n'
+                     f'Linux transactions: {pcnt_linux_txns:.1f}%\n'
+                     f'Macos transactions: {pcnt_osx_txns:.1f}%\n'
+                     f'Unique on-site hosts: {num_onsite_hosts}\n'
+                     f'Unique off-site hosts: {num_offsite_hosts}\n')
+        axes.text(0.45, 0.05, stats_text, transform=axes.transAxes, fontsize=14, bbox=props)
+        axes.legend(['off-site', 'on-site', 'on-site infrastructure'])
 
         plt.tight_layout()
-        plt.savefig(f'{chan}.png')
+        short_startdate = start_date.strftime('%Y%m%d')
+        short_enddate = end_date.strftime('%Y%m%d')
+        plt.savefig(f'{chan}-{short_startdate}-{short_enddate}.png')
 
 
 if __name__ == "__main__":

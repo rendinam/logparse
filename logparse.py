@@ -348,7 +348,7 @@ def main():
         # Total bandwidth consumed by this channel's use over time frame.
         bytecount = pkgs['size'].sum()
         gib = bytecount / 1e9
-        print(f'Channel bytecount = {bytecount}')
+        print(f'Data transferred: {gib:.2f} GiB')
 
         # Number of unique hosts and geographic location
         unique_hosts = set(pkgs['ipaddress'])

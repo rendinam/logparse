@@ -1,0 +1,6 @@
+infrastructure_hosts:
+    - '#.#.#.#'   # Host designated as 'infrastructure'
+
+internal_host_specs:
+    - '^10.'      # Private network block
+    - '^172.17.'  # Private network block
